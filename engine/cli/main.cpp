@@ -1,61 +1,93 @@
 #include <iostream>
+#include <fstream>
 #include "graph/grid.hpp"
+#include "utils/grid_generator.hpp"
 
 using namespace gridpulse;
 
 int main() {
-    std::cout << "=== GridPulse Engine — Data Structure Test ===\n\n";
+    std::cout << "=== GridPulse Engine — Grid Generator Test ===\n\n";
 
-    Grid grid;
+    // Configure generator
+    GeneratorConfig config;
+    config.totalNodes = 30;
+    config.generatorRatio = 0.15;
+    config.substationRatio = 0.25;
+    config.redundancyFactor = 4;
+    config.seed = 42;
 
-    // Create a simple 4-node grid
-    int gen1 = grid.addNode(NodeType::GENERATOR, 100.0, CriticalityTier::CRITICAL, 100.0, 100.0);
-    int sub1 = grid.addNode(NodeType::SUBSTATION, 80.0, CriticalityTier::COMMERCIAL, 200.0, 200.0);
-    int load1 = grid.addNode(NodeType::LOAD, 40.0, CriticalityTier::CRITICAL, 300.0, 300.0);
-    int load2 = grid.addNode(NodeType::LOAD, 30.0, CriticalityTier::RESIDENTIAL, 400.0, 400.0);
+    // Generate grid
+    Grid grid = GridGenerator::generate(config);
 
-    // Connect them
-    grid.addEdge(gen1, sub1, 80.0, 1.0);
-    grid.addEdge(sub1, load1, 40.0, 1.0);
-    grid.addEdge(sub1, load2, 30.0, 1.0);
-
-    // Print nodes
-    std::cout << "Nodes (" << grid.nodeCount() << "):\n";
+    // Print summary
+    int genCount = 0, subCount = 0, loadCount = 0;
+    int critCount = 0, commCount = 0, resCount = 0;
     for (const auto& node : grid.getNodes()) {
-        std::cout << "  Node " << node.id
-                  << " | Type: " << node.typeString()
-                  << " | Capacity: " << node.capacityMW << " MW"
-                  << " | Tier: " << node.tierString()
-                  << " | Position: (" << node.x << ", " << node.y << ")\n";
+        switch (node.type) {
+            case NodeType::GENERATOR:  ++genCount; break;
+            case NodeType::SUBSTATION: ++subCount; break;
+            case NodeType::LOAD:       ++loadCount; break;
+        }
+        if (node.type == NodeType::LOAD) {
+            switch (node.tier) {
+                case CriticalityTier::CRITICAL:    ++critCount; break;
+                case CriticalityTier::COMMERCIAL:  ++commCount; break;
+                case CriticalityTier::RESIDENTIAL: ++resCount; break;
+            }
+        }
     }
 
-    // Print edges
-    std::cout << "\nEdges (" << grid.edgeCount() << "):\n";
-    for (const auto& edge : grid.getEdges()) {
+    std::cout << "Grid generated with:\n";
+    std::cout << "  Total nodes: " << grid.nodeCount() << "\n";
+    std::cout << "  Generators:  " << genCount << "\n";
+    std::cout << "  Substations: " << subCount << "\n";
+    std::cout << "  Loads:       " << loadCount << "\n";
+    std::cout << "    Critical:   " << critCount << "\n";
+    std::cout << "    Commercial: " << commCount << "\n";
+    std::cout << "    Residential:" << resCount << "\n";
+    std::cout << "  Total edges: " << grid.edgeCount() << "\n";
+    std::cout << "  Connected:   " << (grid.isConnected() ? "YES" : "NO") << "\n\n";
+
+    // Print first 10 nodes
+    std::cout << "Sample nodes (first 10):\n";
+    int printCount = std::min(10, grid.nodeCount());
+    for (int i = 0; i < printCount; ++i) {
+        const auto& node = grid.getNodes()[i];
+        std::cout << "  Node " << node.id
+                  << " | " << node.typeString()
+                  << " | Cap: " << node.capacityMW << " MW"
+                  << " | " << node.tierString()
+                  << " | (" << node.x << ", " << node.y << ")\n";
+    }
+
+    // Print first 10 edges
+    std::cout << "\nSample edges (first 10):\n";
+    printCount = std::min(10, grid.edgeCount());
+    for (int i = 0; i < printCount; ++i) {
+        const auto& edge = grid.getEdges()[i];
         std::cout << "  Edge " << edge.id
                   << " | " << edge.from << " -> " << edge.to
-                  << " | Capacity: " << edge.capacityMW << " MW"
-                  << " | Resistance: " << edge.resistance << "\n";
+                  << " | Cap: " << edge.capacityMW << " MW"
+                  << " | Res: " << edge.resistance << "\n";
     }
 
-    // Print neighbors
-    std::cout << "\nAdjacency:\n";
-    for (int i = 0; i < grid.nodeCount(); ++i) {
-        std::cout << "  Node " << i << " neighbors: ";
-        for (int neighbor : grid.getNeighbors(i)) {
-            std::cout << neighbor << " ";
-        }
-        std::cout << "\n";
+    // Export to JSON
+    std::string json = gridToJson(grid);
+    std::ofstream outFile("generated_grid.json");
+    outFile << json;
+    outFile.close();
+    std::cout << "\nGrid exported to 'generated_grid.json'\n";
+
+    // Also print to console (first 30 lines)
+    std::cout << "\nJSON preview (first 30 lines):\n";
+    std::istringstream stream(json);
+    std::string line;
+    int lineCount = 0;
+    while (std::getline(stream, line) && lineCount < 30) {
+        std::cout << line << "\n";
+        ++lineCount;
     }
 
-    // Connectivity check
-    std::cout << "\nGrid is connected: " << (grid.isConnected() ? "YES" : "NO") << "\n";
-
-    // Test edge removal
-    std::cout << "\nRemoving edge 0...\n";
-    grid.removeEdge(0);
-    std::cout << "Grid is connected after removal: " << (grid.isConnected() ? "YES" : "NO") << "\n";
-
-    std::cout << "\n=== All tests passed ===\n";
+    std::cout << "\n=== Grid Generator Test Complete ===\n";
     return 0;
 }
