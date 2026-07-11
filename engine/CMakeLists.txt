@@ -5,10 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Collect all source files
+# Collect all source files automatically
 file(GLOB_RECURSE ENGINE_SOURCES "src/*.cpp")
 
-# Static library — the core engine
+# Static library
 add_library(gridpulse_engine STATIC ${ENGINE_SOURCES})
 target_include_directories(gridpulse_engine PUBLIC include)
 
@@ -16,5 +16,5 @@ target_include_directories(gridpulse_engine PUBLIC include)
 add_executable(gridpulse_cli cli/main.cpp)
 target_link_libraries(gridpulse_cli PRIVATE gridpulse_engine)
 
-# Tests — we'll add Catch2 later
+# Tests
 enable_testing()
