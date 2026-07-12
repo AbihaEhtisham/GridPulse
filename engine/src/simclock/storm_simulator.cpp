@@ -1,9 +1,9 @@
 #include "simclock/storm_simulator.hpp"
 #include "flow/min_cost_max_flow.hpp"
-#include "cascade/cascade_loop.hpp"
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <iostream>
 
 namespace gridpulse {
 
@@ -25,47 +25,45 @@ void StormSimulator::initialize(const Grid& grid) {
     // Compute initial flow
     auto flowResult = MinCostMaxFlow::compute(grid_);
     for (size_t i = 0; i < flowResult.edgeFlows.size(); ++i) {
-        grid_.getEdge(static_cast<int>(i)).currentFlowMW = flowResult.edgeFlows[i];
+        if (i < static_cast<size_t>(grid_.edgeCount())) {
+            grid_.getEdge(static_cast<int>(i)).currentFlowMW = flowResult.edgeFlows[i];
+        }
     }
 
-    // Schedule storm events
-    scheduleStormEvents();
-
-    // Record initial frame
-    timeline_.push_back(captureFrame("Storm approaching..."));
-}
-
-void StormSimulator::scheduleStormEvents() {
-    // Schedule storm front advances
-    for (double t = 0; t < config_.duration; t += 10.0) {
-        queue_.schedule(t, EventType::STORM_FRONT_ADVANCE, -1, 
-                        config_.intensity, "Storm front advancing", 10);
+    // Schedule storm events at regular intervals
+    double interval = config_.duration / 15.0; // 15 events during the storm
+    for (int i = 1; i <= 15; i++) {
+        double t = i * interval;
+        queue_.schedule(t, EventType::STORM_FRONT_ADVANCE, -1, 0.0,
+                       "Storm wave " + std::to_string(i), 10);
     }
 
-    // Schedule initial line failures
-    auto vulnerable = getVulnerableEdges();
-    std::shuffle(vulnerable.begin(), vulnerable.end(), rng_);
-    int numFail = std::min(config_.numInitialFailures, static_cast<int>(vulnerable.size()));
-    for (int i = 0; i < numFail; ++i) {
-        double failTime = 5.0 + (i * 3.0) + (rand() % 100) / 100.0 * 5.0;
-        queue_.schedule(failTime, EventType::LINE_FAILURE, vulnerable[i],
-                        0.0, "Storm damages transmission line", 5);
+    // Schedule initial line failures early in the storm
+    int edgesToFail = std::min(config_.numInitialFailures, std::max(1, grid_.edgeCount() / 4));
+    for (int i = 0; i < edgesToFail; i++) {
+        double failTime = 3.0 + i * 4.0;
+        int edgeId = (i * 7 + 3) % grid_.edgeCount();
+        queue_.schedule(failTime, EventType::LINE_FAILURE, edgeId, 0.0,
+                       "Lightning strike on line " + std::to_string(edgeId), 5);
     }
 
-    // Schedule periodic overload checks
-    for (double t = 1.0; t < config_.duration; t += config_.overloadCheckInterval) {
-        queue_.schedule(t, EventType::OVERLOAD_CHECK, -1, 0.0, "Checking for overloads", 3);
+    // Schedule overload checks
+    for (double t = 2.0; t < config_.duration; t += 8.0) {
+        queue_.schedule(t, EventType::OVERLOAD_CHECK, -1, 0.0, "Grid stress check", 3);
     }
 
     // Schedule storm end
-    queue_.schedule(config_.duration, EventType::STORM_END, -1, 0.0, "Storm passes", 0);
+    queue_.schedule(config_.duration, EventType::STORM_END, -1, 0.0,
+                   "Storm system has passed", 0);
+
+    // Record initial frame
+    timeline_.push_back(captureFrame("Storm approaching the city..."));
 }
 
 StormResult StormSimulator::runFull() {
     while (!isFinished()) {
         stepNext();
     }
-
     StormResult result;
     result.timeline = timeline_;
     result.finalGridHealth = gridHealth_;
@@ -79,7 +77,14 @@ StormResult StormSimulator::runFull() {
 
 StormFrame StormSimulator::stepNext() {
     if (queue_.isEmpty()) {
-        return captureFrame("No more events");
+        StormFrame sf;
+        sf.timestamp = config_.duration;
+        sf.eventDescription = "No more events";
+        sf.gridHealth = gridHealth_;
+        sf.criticalLoadProtected = criticalProtected_;
+        sf.linesFailed = linesFailed_;
+        sf.nodesFailed = nodesFailed_;
+        return sf;
     }
 
     SimEvent event = queue_.pop();
@@ -95,52 +100,65 @@ StormFrame StormSimulator::stepNext() {
             handleOverloadCheck();
             break;
         case EventType::STORM_END:
+            // Storm is over
             break;
         default:
             break;
     }
 
     updateMetrics();
-    return captureFrame(event.description);
+
+    std::string desc = event.description;
+    if (event.type == EventType::LINE_FAILURE) {
+        desc = event.description + " - Grid stress increasing";
+    }
+
+    return captureFrame(desc);
 }
 
 void StormSimulator::handleStormAdvance() {
-    // Storm intensity increases failure probability for exposed edges
-    auto vulnerable = getVulnerableEdges();
+    // Randomly fail some edges as storm intensifies
     std::uniform_real_distribution<double> dist(0.0, 1.0);
+    std::vector<int> candidates;
     
-    for (int edgeId : vulnerable) {
-        double failChance = config_.intensity * 0.15;
-        if (dist(rng_) < failChance) {
-            queue_.schedule(queue_.currentTime() + 0.5, EventType::LINE_FAILURE,
-                           edgeId, 0.0, "Storm surge damages line", 6);
+    for (int i = 0; i < grid_.edgeCount(); i++) {
+        if (!grid_.getEdge(i).tripped) {
+            candidates.push_back(i);
         }
+    }
+
+    int numToFail = std::max(0, static_cast<int>(candidates.size() * config_.intensity * 0.1));
+    std::shuffle(candidates.begin(), candidates.end(), rng_);
+
+    for (int i = 0; i < numToFail && i < static_cast<int>(candidates.size()); i++) {
+        int edgeId = candidates[i];
+        double failTime = queue_.currentTime() + 0.1 + (i * 0.05);
+        queue_.schedule(failTime, EventType::LINE_FAILURE, edgeId, 0.0,
+                       "Storm damages transmission line " + std::to_string(edgeId), 6);
     }
 }
 
 void StormSimulator::handleLineFailure(int edgeId) {
     if (edgeId < 0 || edgeId >= grid_.edgeCount()) return;
-    
+
     Edge& edge = grid_.getEdge(edgeId);
     if (!edge.tripped) {
         edge.tripped = true;
         linesFailed_++;
 
-        // Recompute flow
+        // Recompute flow after failure
         auto flowResult = MinCostMaxFlow::compute(grid_);
-        for (size_t i = 0; i < flowResult.edgeFlows.size(); ++i) {
-            grid_.getEdge(static_cast<int>(i)).currentFlowMW = flowResult.edgeFlows[i];
+        for (size_t i = 0; i < flowResult.edgeFlows.size(); i++) {
+            if (i < static_cast<size_t>(grid_.edgeCount())) {
+                grid_.getEdge(static_cast<int>(i)).currentFlowMW = flowResult.edgeFlows[i];
+            }
         }
-
-        // Schedule immediate overload check
-        queue_.schedule(queue_.currentTime() + 0.1, EventType::OVERLOAD_CHECK,
-                       -1, 0.0, "Immediate overload check after failure", 2);
     }
 }
 
 void StormSimulator::handleOverloadCheck() {
     std::vector<int> newlyOverloaded;
-    for (int i = 0; i < grid_.edgeCount(); ++i) {
+    for (int i = 0; i < grid_.edgeCount(); i++) {
         Edge& edge = grid_.getEdge(i);
         if (!edge.tripped && edge.isOverloaded()) {
             newlyOverloaded.push_back(i);
@@ -154,14 +172,15 @@ void StormSimulator::handleOverloadCheck() {
 
     if (!newlyOverloaded.empty()) {
         auto flowResult = MinCostMaxFlow::compute(grid_);
-        for (size_t i = 0; i < flowResult.edgeFlows.size(); ++i) {
-            grid_.getEdge(static_cast<int>(i)).currentFlowMW = flowResult.edgeFlows[i];
+        for (size_t i = 0; i < flowResult.edgeFlows.size(); i++) {
+            if (i < static_cast<size_t>(grid_.edgeCount())) {
+                grid_.getEdge(static_cast<int>(i)).currentFlowMW = flowResult.edgeFlows[i];
+            }
         }
     }
 }
 
 void StormSimulator::updateMetrics() {
-    // Calculate grid health: fraction of demand being served
     double totalDemand = 0.0;
     double servedDemand = 0.0;
     double criticalDemand = 0.0;
@@ -170,16 +189,33 @@ void StormSimulator::updateMetrics() {
     for (const auto& node : grid_.getNodes()) {
         if (node.type == NodeType::LOAD) {
             totalDemand += node.capacityMW;
-            servedDemand += node.currentLoadMW;
+            // Check if node can be reached from a generator
+            bool hasPower = false;
+            for (int edgeId : grid_.getIncidentEdges(node.id)) {
+                const Edge& e = grid_.getEdge(edgeId);
+                if (!e.tripped && e.currentFlowMW > 0.1) {
+                    hasPower = true;
+                    break;
+                }
+            }
+            if (hasPower || grid_.isConnected()) {
+                servedDemand += node.capacityMW;
+                if (node.tier == CriticalityTier::CRITICAL) {
+                    criticalServed += node.capacityMW;
+                }
+            }
             if (node.tier == CriticalityTier::CRITICAL) {
                 criticalDemand += node.capacityMW;
-                criticalServed += node.currentLoadMW;
             }
         }
     }
 
     gridHealth_ = (totalDemand > 0) ? servedDemand / totalDemand : 0.0;
     criticalProtected_ = (criticalDemand > 0) ? criticalServed / criticalDemand : 0.0;
+
+    // Clamp values
+    gridHealth_ = std::max(0.0, std::min(1.0, gridHealth_));
+    criticalProtected_ = std::max(0.0, std::min(1.0, criticalProtected_));
 }
 
 StormFrame StormSimulator::captureFrame(const std::string& description) {
@@ -191,7 +227,6 @@ StormFrame StormSimulator::captureFrame(const std::string& description) {
     sf.linesFailed = linesFailed_;
     sf.nodesFailed = nodesFailed_;
 
-    // Record grid state
     sf.gridFrame.frameNumber = static_cast<int>(timeline_.size());
     sf.gridFrame.eventDescription = description;
     for (const auto& node : grid_.getNodes()) {
@@ -209,21 +244,33 @@ StormFrame StormSimulator::captureFrame(const std::string& description) {
 }
 
 bool StormSimulator::isFinished() const {
-    if (queue_.isEmpty()) return true;
-    return queue_.peek().type == EventType::STORM_END && queue_.size() == 1;
+    return queue_.isEmpty();
 }
 
 void StormSimulator::playerCutEdge(int edgeId) {
     if (edgeId < 0 || edgeId >= grid_.edgeCount()) return;
-    queue_.schedule(queue_.currentTime() + 0.01, EventType::PLAYER_CUT_EDGE,
-                   edgeId, 0.0, "Player cut transmission line", 0);
-    grid_.getEdge(edgeId).tripped = true;
-    linesFailed_++;
+    if (!grid_.getEdge(edgeId).tripped) {
+        grid_.getEdge(edgeId).tripped = true;
+        linesFailed_++;
+        auto flowResult = MinCostMaxFlow::compute(grid_);
+        for (size_t i = 0; i < flowResult.edgeFlows.size(); i++) {
+            if (i < static_cast<size_t>(grid_.edgeCount())) {
+                grid_.getEdge(static_cast<int>(i)).currentFlowMW = flowResult.edgeFlows[i];
+            }
+        }
+        timeline_.push_back(captureFrame("Player cut line " + std::to_string(edgeId)));
+    }
 }
 
 void StormSimulator::playerSpikeDemand(int nodeId, double amount) {
     if (nodeId < 0 || nodeId >= grid_.nodeCount()) return;
     grid_.getNode(nodeId).capacityMW += amount;
+    auto flowResult = MinCostMaxFlow::compute(grid_);
+    for (size_t i = 0; i < flowResult.edgeFlows.size(); i++) {
+        if (i < static_cast<size_t>(grid_.edgeCount())) {
+            grid_.getEdge(static_cast<int>(i)).currentFlowMW = flowResult.edgeFlows[i];
+        }
+    }
 }
 
 bool StormSimulator::playerReinforceLine(int edgeId) {
@@ -233,19 +280,8 @@ bool StormSimulator::playerReinforceLine(int edgeId) {
 
     playerBudget_ -= REINFORCE_COST;
     Edge& edge = grid_.getEdge(edgeId);
-    edge.capacityMW *= 1.5; // 50% capacity boost
+    edge.capacityMW *= 1.5;
     return true;
-}
-
-std::vector<int> StormSimulator::getVulnerableEdges() {
-    std::vector<int> vulnerable;
-    for (int i = 0; i < grid_.edgeCount(); ++i) {
-        const Edge& edge = grid_.getEdge(i);
-        if (!edge.tripped) {
-            vulnerable.push_back(i);
-        }
-    }
-    return vulnerable;
 }
 
 } // namespace gridpulse

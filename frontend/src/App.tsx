@@ -1,247 +1,224 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import GridCanvas from './components/GridCanvas';
-import { generateMapGrid, runSimulation } from './services/api';
-import type { GridData, CascadeResult, FrameData } from './types/grid';
+import { generateMapGrid } from './services/api';
+import type { GridData } from './types/grid';
+
+const WS_URL = 'ws://localhost:8000/ws/storm';
 
 export default function App() {
   const [gridData, setGridData] = useState<GridData | null>(null);
-  const [frames, setFrames] = useState<FrameData[]>([]);
-  const [currentFrame, setCurrentFrame] = useState(0);
-  const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [nodeCount, setNodeCount] = useState(25);
+  const [nodeCount, setNodeCount] = useState(20);
   const [seed, setSeed] = useState(42);
-  const [mode, setMode] = useState<'view' | 'cutEdge' | 'spikeDemand'>('view');
+  const [stormIntensity, setStormIntensity] = useState(0.6);
+  const [mode, setMode] = useState<'view' | 'cutEdge' | 'reinforce'>('view');
   const [showHeatmap, setShowHeatmap] = useState(false);
-  const [summary, setSummary] = useState<CascadeResult | null>(null);
-  const playIntervalRef = useRef<number | null>(null);
 
-  // Generate a fresh grid
+  // Storm state
+  const [stormActive, setStormActive] = useState(false);
+  const [gridHealth, setGridHealth] = useState(100);
+  const [criticalProtected, setCriticalProtected] = useState(100);
+  const [linesFailed, setLinesFailed] = useState(0);
+  const [budget, setBudget] = useState(100);
+  const [eventLog, setEventLog] = useState<string[]>([]);
+  const [stormProgress, setStormProgress] = useState(0);
+  const wsRef = useRef<WebSocket | null>(null);
 
-const handleGenerate = useCallback(async () => {
-  setLoading(true);
-  setError(null);
-  setFrames([]);
-  setCurrentFrame(0);
-  setSummary(null);
-  setShowHeatmap(false);
-  try {
-    const data = await generateMapGrid({
-      mapWidth: 1200,
-      mapHeight: 800,
-      numPowerPlants: 3,
-      numSubstations: 5,
-      numHospitals: 2,
-      numCommercial: 8,
-      numResidential: nodeCount,
-      redundancyFactor: 5,
-      seed,
-    });
-    setGridData(data);
-  } catch (err: any) {
-    setError(err?.message || 'Failed to generate grid');
-  }
-  setLoading(false);
-}, [nodeCount, seed]);
-
-  // Run cascade and collect all frames
-  const handleRunCascade = useCallback(async () => {
-    if (!gridData) return;
+  // Generate map grid
+  const handleGenerate = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setStormActive(false);
+    setEventLog([]);
+    setLinesFailed(0);
+    setGridHealth(100);
+    setCriticalProtected(100);
+    setStormProgress(0);
     try {
-      const result = await runSimulation(
-        { totalNodes: nodeCount, generatorRatio: 0.2, substationRatio: 0.25, redundancyFactor: 3, seed },
-        { type: 'CUT_EDGE', targetId: 0 }
-      );
-      setFrames(result.frames);
-      setSummary(result);
-      setCurrentFrame(0);
-      // Apply first frame
-      applyFrame(result.frames[0]);
+      const data = await generateMapGrid({
+        mapWidth: 1200, mapHeight: 800,
+        numPowerPlants: 3, numSubstations: 5,
+        numHospitals: 2, numCommercial: 8,
+        numResidential: nodeCount,
+        redundancyFactor: 5, seed,
+      });
+      setGridData(data);
     } catch (err: any) {
-      setError(err?.message || 'Simulation failed');
+      setError(err?.message || 'Failed to generate grid');
     }
     setLoading(false);
-  }, [gridData, nodeCount, seed]);
+  }, [nodeCount, seed]);
 
-  // Apply a specific frame to the grid
-  const applyFrame = useCallback(
-    (frame: FrameData) => {
-      if (!frame || !gridData) return;
-      setGridData((prev) => {
-        if (!prev) return prev;
-        return {
-          nodes: (frame.nodes || prev.nodes).map((n) => ({
-            ...n,
-            currentLoadMW: frame.nodeLoads?.[n.id] ?? n.currentLoadMW,
-          })),
-          edges: (frame.edges || prev.edges).map((e, i) => ({
-            ...e,
-            currentFlowMW: frame.edgeFlows?.[i] ?? 0,
-            tripped: frame.edgeTripped?.[i] ?? false,
-          })),
-        };
-      });
-    },
-    [gridData]
-  );
+  // Start storm via WebSocket
+  const handleStartStorm = useCallback(() => {
+    if (!gridData || stormActive) return;
+    setStormActive(true);
+    setEventLog(['⚠️ Storm approaching the city...']);
 
-  // Jump to a specific frame
-  const goToFrame = useCallback(
-    (index: number) => {
-      const i = Math.max(0, Math.min(index, frames.length - 1));
-      setCurrentFrame(i);
-      applyFrame(frames[i]);
-    },
-    [frames, applyFrame]
-  );
+    const sessionId = `storm_${Date.now()}`;
+    const ws = new WebSocket(`${WS_URL}/${sessionId}`);
+    wsRef.current = ws;
 
-  // Play/Pause animation
-  const togglePlay = useCallback(() => {
-    if (playing) {
-      if (playIntervalRef.current) clearInterval(playIntervalRef.current);
-      setPlaying(false);
-    } else {
-      setPlaying(true);
-      let frame = currentFrame;
-      playIntervalRef.current = window.setInterval(() => {
-        frame++;
-        if (frame >= frames.length) {
-          frame = frames.length - 1;
-          if (playIntervalRef.current) clearInterval(playIntervalRef.current);
-          setPlaying(false);
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        gridConfig: {
+          mapWidth: 1200, mapHeight: 800,
+          numPowerPlants: 3, numSubstations: 5,
+          numHospitals: 2, numCommercial: 8,
+          numResidential: nodeCount,
+          redundancyFactor: 5, seed,
+        },
+        stormConfig: {
+          duration: 120,
+          intensity: stormIntensity,
+          numInitialFailures: 3,
+          seed,
+          playerBudget: 100,
         }
-        goToFrame(frame);
-      }, 600);
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === 'init') {
+        setGridData(msg.grid);
+        setBudget(msg.budget);
+      } else if (msg.type === 'frame') {
+        setGridData(msg.grid);
+        setGridHealth(Math.round(msg.gridHealth * 100));
+        setCriticalProtected(Math.round(msg.criticalProtected * 100));
+        setLinesFailed(msg.linesFailed);
+        setStormProgress(Math.round((msg.timestamp / 120) * 100));
+        setEventLog(prev => [...prev.slice(-19), `${msg.description}`]);
+      } else if (msg.type === 'complete') {
+        setStormActive(false);
+        setEventLog(prev => [...prev.slice(-19), '✅ Storm has passed!']);
+      }
+    };
+
+    ws.onerror = () => setError('WebSocket connection failed');
+    ws.onclose = () => setStormActive(false);
+  }, [gridData, stormActive, nodeCount, seed, stormIntensity]);
+
+  // Player actions
+  const handleEdgeClick = useCallback((edgeId: number) => {
+    if (!stormActive || !wsRef.current) return;
+    if (mode === 'cutEdge') {
+      wsRef.current.send(JSON.stringify({
+        sessionId: '', action: 'cutEdge', targetId: edgeId
+      }));
+      setMode('view');
+    } else if (mode === 'reinforce') {
+      wsRef.current.send(JSON.stringify({
+        sessionId: '', action: 'reinforce', targetId: edgeId
+      }));
+      setBudget(prev => prev - 20);
+      setMode('view');
     }
-  }, [playing, currentFrame, frames, goToFrame]);
-
-  // Handle edge click
-  const handleEdgeClick = useCallback(
-    async (edgeId: number) => {
-      if (mode === 'cutEdge' && gridData) {
-        setLoading(true);
-        try {
-          const result = await runSimulation(
-            { totalNodes: nodeCount, generatorRatio: 0.2, substationRatio: 0.25, redundancyFactor: 3, seed },
-            { type: 'CUT_EDGE', targetId: edgeId }
-          );
-          setFrames(result.frames);
-          setSummary(result);
-          setCurrentFrame(0);
-          applyFrame(result.frames[0]);
-        } catch (err: any) {
-          setError(err?.message || 'Cut edge failed');
-        }
-        setLoading(false);
-        setMode('view');
-      }
-    },
-    [mode, gridData, nodeCount, seed, applyFrame]
-  );
-
-  const handleNodeClick = useCallback(
-    async (nodeId: number) => {
-      if (mode === 'spikeDemand' && gridData) {
-        setLoading(true);
-        try {
-          const result = await runSimulation(
-            { totalNodes: nodeCount, generatorRatio: 0.2, substationRatio: 0.25, redundancyFactor: 3, seed },
-            { type: 'SPIKE_DEMAND', targetId: nodeId}
-          );
-          setFrames(result.frames);
-          setSummary(result);
-          setCurrentFrame(0);
-          applyFrame(result.frames[0]);
-        } catch (err: any) {
-          setError(err?.message || 'Spike demand failed');
-        }
-        setLoading(false);
-        setMode('view');
-      }
-    },
-    [mode, gridData, nodeCount, seed, applyFrame]
-  );
-
-  const currentFrameData = frames[currentFrame];
+  }, [stormActive, mode]);
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-200 overflow-hidden">
-      {/* Top Bar */}
+      {/* Header */}
       <header className="shrink-0 border-b border-slate-800 bg-slate-900 px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="text-2xl">⚡</span>
+          <span className="text-2xl">⛈️</span>
           <div>
-            <h1 className="text-lg font-bold text-white">GridPulse</h1>
-            <p className="text-xs text-slate-500">Power Grid Resilience Platform</p>
+            <h1 className="text-lg font-bold text-white">GridPulse: Storm Watch</h1>
+            <p className="text-xs text-slate-500">Protect the city from the approaching storm</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleGenerate}
-            disabled={loading}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-lg text-sm font-semibold transition"
-          >
-            Generate Grid
-          </button>
-          <button
-            onClick={handleRunCascade}
-            disabled={!gridData || loading}
-            className="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-40 rounded-lg text-sm font-semibold transition"
-          >
-            Run Cascade
-          </button>
-          <button
-            onClick={() => setShowHeatmap(!showHeatmap)}
-            disabled={!gridData}
-            className={`px-4 py-2 rounded-lg text-sm font-semibold transition ${
-              showHeatmap ? 'bg-yellow-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-            }`}
-          >
-            Heatmap
-          </button>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-slate-500">Nodes:</span>
-          <input
-            type="number"
-            value={nodeCount}
-            onChange={(e) => setNodeCount(Number(e.target.value))}
-            className="w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-white text-center"
-          />
-          <button onClick={() => setSeed(Math.floor(Math.random() * 10000))} className="text-sm px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">
-            🎲
-          </button>
+          <span className="text-xs text-slate-500">Houses:</span>
+          <input type="number" value={nodeCount} onChange={(e) => setNodeCount(Number(e.target.value))}
+            className="w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-white text-center" />
+          <span className="text-xs text-slate-500">Storm:</span>
+          <input type="range" min="0.2" max="1.0" step="0.1" value={stormIntensity}
+            onChange={(e) => setStormIntensity(Number(e.target.value))}
+            className="w-24 accent-orange-500" />
+          <span className="text-xs text-orange-400">{Math.round(stormIntensity * 100)}%</span>
+          <button onClick={() => setSeed(Math.floor(Math.random() * 10000))}
+            className="text-sm px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">🎲</button>
         </div>
       </header>
 
       {/* Toolbar */}
       <div className="shrink-0 border-b border-slate-800 bg-slate-900/50 px-6 py-2 flex items-center gap-3">
+        <button onClick={handleGenerate} disabled={loading}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-lg text-sm font-semibold transition">
+          🏗️ Build City
+        </button>
+        <button onClick={handleStartStorm} disabled={!gridData || stormActive}
+          className="px-4 py-2 bg-orange-600 hover:bg-orange-500 disabled:opacity-40 rounded-lg text-sm font-semibold transition animate-pulse">
+          🌪️ Start Storm
+        </button>
+
+        <div className="w-px h-6 bg-slate-700 mx-2" />
+
         <span className="text-xs text-slate-500 uppercase tracking-wider">Tools:</span>
-        {(['view', 'cutEdge', 'spikeDemand'] as const).map((m) => (
-          <button
-            key={m}
-            onClick={() => setMode(m)}
+        {(['view', 'cutEdge', 'reinforce'] as const).map((m) => (
+          <button key={m} onClick={() => setMode(m)}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-              mode === m
-                ? 'bg-white/10 text-white border border-white/20'
+              mode === m ? 'bg-white/10 text-white border border-white/20'
                 : 'bg-transparent text-slate-500 hover:text-slate-300 border border-transparent'
-            }`}
-          >
-            {m === 'view' ? '👆 View' : m === 'cutEdge' ? '✂️ Cut Edge' : '📈 Spike Demand'}
+            }`}>
+            {m === 'view' ? '👆 View' : m === 'cutEdge' ? '✂️ Cut Line' : '🛡️ Reinforce ($20)'}
           </button>
         ))}
-        {mode !== 'view' && (
-          <span className="text-xs text-yellow-400 animate-pulse">
-            Click on a {mode === 'cutEdge' ? 'line' : 'node'} in the grid
-          </span>
-        )}
+        <button onClick={() => setShowHeatmap(!showHeatmap)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+            showHeatmap ? 'bg-yellow-600 text-white' : 'bg-slate-800 text-slate-400'
+          }`}>🔥 Heatmap</button>
+
         {loading && <span className="text-xs text-blue-400 animate-pulse ml-auto">Processing...</span>}
       </div>
+
+      {/* Health Bars */}
+      {gridData && (
+        <div className="shrink-0 px-6 py-2 bg-slate-900/30 border-b border-slate-800 flex gap-6">
+          <div className="flex-1">
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-slate-400">Grid Health</span>
+              <span className={gridHealth > 70 ? 'text-green-400' : gridHealth > 30 ? 'text-yellow-400' : 'text-red-400'}>{gridHealth}%</span>
+            </div>
+            <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-green-500 to-emerald-400 rounded-full transition-all duration-500"
+                style={{ width: `${gridHealth}%` }} />
+            </div>
+          </div>
+          <div className="flex-1">
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-slate-400">Critical Protected</span>
+              <span className="text-blue-400">{criticalProtected}%</span>
+            </div>
+            <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-blue-500 to-cyan-400 rounded-full transition-all duration-500"
+                style={{ width: `${criticalProtected}%` }} />
+            </div>
+          </div>
+          <div className="flex-1">
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-slate-400">Storm Progress</span>
+              <span className="text-orange-400">{stormProgress}%</span>
+            </div>
+            <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-orange-500 to-red-500 rounded-full transition-all duration-500"
+                style={{ width: `${stormProgress}%` }} />
+            </div>
+          </div>
+          <div className="text-xs text-slate-400 flex items-center gap-2">
+            <span>💰 Budget:</span>
+            <span className="text-yellow-400 font-mono font-bold">${budget}</span>
+          </div>
+          <div className="text-xs text-slate-400 flex items-center gap-2">
+            <span>🔌 Lines Down:</span>
+            <span className="text-red-400 font-mono font-bold">{linesFailed}</span>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <div className="flex-1 flex overflow-hidden">
@@ -249,113 +226,44 @@ const handleGenerate = useCallback(async () => {
         <div className="flex-1 p-4">
           <div className="h-full bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
             {gridData ? (
-              <GridCanvas
-                gridData={gridData}
-                onEdgeClick={handleEdgeClick}
-                onNodeClick={handleNodeClick}
-                highlightMode={mode}
-                showHeatmap={showHeatmap}
-              />
+              <GridCanvas gridData={gridData} onEdgeClick={handleEdgeClick}
+                highlightMode={mode === 'view' ? 'view' : mode === 'cutEdge' ? 'cutEdge' : 'view'}
+                showHeatmap={showHeatmap} />
             ) : (
               <div className="h-full flex items-center justify-center text-slate-600">
                 <div className="text-center">
-                  <div className="text-5xl mb-4">⚡</div>
-                  <p className="text-lg">Generate a grid to begin</p>
-                  <p className="text-sm mt-1">Configure node count and click Generate Grid</p>
+                  <div className="text-6xl mb-4">🏙️</div>
+                  <p className="text-lg font-semibold">GridPulse City</p>
+                  <p className="text-sm mt-1">Build a city and defend it against the storm</p>
                 </div>
               </div>
             )}
           </div>
         </div>
 
-        {/* Right Panel */}
-        <aside className="w-80 shrink-0 border-l border-slate-800 bg-slate-900/50 p-4 flex flex-col gap-4 overflow-y-auto">
-          {/* Live Stats */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Live Metrics</h3>
-            {gridData ? (
-              <div className="space-y-2 text-sm">
-                <Stat label="Active Nodes" value={String(gridData.nodes.length)} />
-                <Stat label="Active Edges" value={String(gridData.edges.filter((e) => !e.tripped).length)} />
-                <Stat label="Tripped Edges" value={String(gridData.edges.filter((e) => e.tripped).length)} color="text-red-400" />
-              </div>
-            ) : (
-              <p className="text-xs text-slate-600">No grid loaded</p>
+        {/* Event Ticker */}
+        <aside className="w-72 shrink-0 border-l border-slate-800 bg-slate-900/50 p-4 flex flex-col">
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">📻 Event Log</h3>
+          <div className="flex-1 overflow-y-auto space-y-1 text-xs font-mono">
+            {eventLog.length === 0 && (
+              <p className="text-slate-600 italic">No events yet. Start a storm to see live updates.</p>
             )}
+            {eventLog.map((evt, i) => (
+              <div key={i} className={`py-1 px-2 rounded ${evt.includes('⚠️') ? 'text-yellow-400 bg-yellow-900/20' :
+                  evt.includes('damage') || evt.includes('fail') ? 'text-red-400 bg-red-900/20' :
+                  evt.includes('✅') ? 'text-green-400 bg-green-900/20' :
+                  evt.includes('🛡️') ? 'text-blue-400 bg-blue-900/20' :
+                  'text-slate-400'
+                }`}>
+                {evt}
+              </div>
+            ))}
           </div>
-
-          {/* Cascade Frame Info */}
-          {currentFrameData && (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-                Frame {currentFrame + 1} / {frames.length}
-              </h3>
-              <p className="text-sm text-slate-300">{currentFrameData.eventDescription}</p>
-              <div className="mt-2 text-xs text-slate-500">
-                Island groups: {new Set(currentFrameData.islandIds).size}
-              </div>
-            </div>
-          )}
-
-          {/* Summary */}
-          {summary && (
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Result</h3>
-              <div className="space-y-2 text-sm">
-                <Stat label="Stabilized" value={summary.gridStabilized ? '✅ Yes' : '❌ No'} />
-                <Stat label="Edges Tripped" value={String(summary.totalEdgesTripped)} color="text-red-400" />
-                <Stat label="Loads Shed" value={String(summary.totalNodesShed)} color="text-orange-400" />
-                <Stat
-                  label="Demand Served"
-                  value={`${summary.initialDemand > 0 ? ((summary.finalDemandServed / summary.initialDemand) * 100).toFixed(0) : 0}%`}
-                  color="text-green-400"
-                />
-              </div>
-            </div>
-          )}
-
           {error && (
-            <div className="bg-red-900/30 border border-red-800 rounded-xl p-4 text-sm text-red-400">
-              {error}
-            </div>
+            <div className="mt-3 p-3 bg-red-900/30 border border-red-800 rounded-lg text-xs text-red-400">{error}</div>
           )}
         </aside>
       </div>
-
-      {/* Timeline */}
-      {frames.length > 0 && (
-        <div className="shrink-0 border-t border-slate-800 bg-slate-900 px-6 py-3">
-          <div className="flex items-center gap-4">
-            <button onClick={togglePlay} className="text-lg w-8 h-8 flex items-center justify-center bg-slate-800 hover:bg-slate-700 rounded-lg transition">
-              {playing ? '⏸' : '▶'}
-            </button>
-            <button onClick={() => goToFrame(0)} className="text-sm px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">⏮</button>
-            <button onClick={() => goToFrame(currentFrame - 1)} className="text-sm px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">◀</button>
-            <input
-              type="range"
-              min={0}
-              max={frames.length - 1}
-              value={currentFrame}
-              onChange={(e) => goToFrame(Number(e.target.value))}
-              className="flex-1 accent-blue-500"
-            />
-            <button onClick={() => goToFrame(currentFrame + 1)} className="text-sm px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">▶</button>
-            <button onClick={() => goToFrame(frames.length - 1)} className="text-sm px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded">⏭</button>
-            <span className="text-xs text-slate-500 font-mono w-24 text-right">
-              {currentFrame + 1} / {frames.length}
-            </span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Stat({ label, value, color = 'text-white' }: { label: string; value: string; color?: string }) {
-  return (
-    <div className="flex justify-between">
-      <span className="text-slate-500">{label}</span>
-      <span className={`font-mono font-semibold ${color}`}>{value}</span>
     </div>
   );
 }

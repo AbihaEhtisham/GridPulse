@@ -90,6 +90,37 @@ def run_cascade(grid_config_dict: dict, trigger_dict: dict):
     
     return dict(result)
 
+def init_storm_simulator(grid_config_dict: dict, storm_config_dict: dict):
+    """Initialize a storm simulator with a map grid."""
+    # Generate the map grid
+    map_config = _engine.MapConfig()
+    map_config.mapWidth = grid_config_dict.get("mapWidth", 1200)
+    map_config.mapHeight = grid_config_dict.get("mapHeight", 800)
+    map_config.numPowerPlants = grid_config_dict.get("numPowerPlants", 3)
+    map_config.numSubstations = grid_config_dict.get("numSubstations", 5)
+    map_config.numHospitals = grid_config_dict.get("numHospitals", 2)
+    map_config.numCommercial = grid_config_dict.get("numCommercial", 8)
+    map_config.numResidential = grid_config_dict.get("numResidential", 20)
+    map_config.redundancyFactor = grid_config_dict.get("redundancyFactor", 5)
+    map_config.seed = grid_config_dict.get("seed", 42)
+
+    grid = _engine.generateMapGrid(map_config)
+
+    # Configure storm
+    storm_config = _engine.StormConfig()
+    storm_config.duration = storm_config_dict.get("duration", 120.0)
+    storm_config.intensity = storm_config_dict.get("intensity", 0.6)
+    storm_config.numInitialFailures = storm_config_dict.get("numInitialFailures", 3)
+    storm_config.seed = storm_config_dict.get("seed", grid_config_dict.get("seed", 42))
+    storm_config.playerBudget = storm_config_dict.get("playerBudget", 100.0)
+
+    # Create simulator
+    sim = _engine.StormSimulator(storm_config)
+    sim.initialize(grid)
+
+    # Serialize grid for frontend
+    grid_data = _serialize_grid(sim.getGrid())
+    return grid_data, sim
 
 def compute_flow(grid_config_dict: dict):
     """Compute optimal power flow for a grid."""

@@ -6,6 +6,7 @@ from app.models.database import get_db
 from app.models.schemas import SimulationRequest, CascadeResponse
 from app.services.engine_service import run_cascade
 from app.repositories import grid_repo, simulation_repo
+from app.services.engine_service import _serialize_grid
 
 router = APIRouter(prefix="/api/simulations", tags=["simulations"])
 
@@ -47,6 +48,29 @@ async def list_simulations(grid_id: int = None, db: Session = Depends(get_db)):
         for s in sims
     ]
 
+@router.post("/storm/action")
+async def storm_action(request: dict):
+    """Handle player actions during a storm."""
+    session_id = request.get("sessionId")
+    action = request.get("action")
+    target_id = request.get("targetId", 0)
+
+    sim = None
+    from app.websocket.simulation_ws import active_simulators
+    sim = active_simulators.get(session_id)
+
+    if not sim:
+        return {"error": "No active storm session"}
+
+    if action == "cutEdge":
+        sim.playerCutEdge(target_id)
+    elif action == "reinforce":
+        success = sim.playerReinforceLine(target_id)
+        return {"success": success, "grid": _serialize_grid(sim.getGrid())}
+    elif action == "spikeDemand":
+        sim.playerSpikeDemand(target_id, request.get("value", 0))
+
+    return {"success": True}
 
 @router.get("/{sim_id}")
 async def get_simulation(sim_id: int, db: Session = Depends(get_db)):

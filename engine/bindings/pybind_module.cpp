@@ -12,6 +12,8 @@
 #include "cascade/frame.hpp"
 #include "analysis/betweenness.hpp"
 #include "analysis/articulation_points.hpp"
+#include "simclock/event_queue.hpp"
+#include "simclock/storm_simulator.hpp"
 
 namespace py = pybind11;
 using namespace gridpulse;
@@ -178,6 +180,37 @@ PYBIND11_MODULE(gridpulse_engine_py, m) {
     m.def("generateMapGrid", [](const MapConfig& config) {
         return MapGridGenerator::generate(config);
     }, py::arg("config"), "Generate a city-style map grid with realistic layout");
+
+        // ===== Storm Config =====
+    py::class_<StormConfig>(m, "StormConfig")
+        .def(py::init<>())
+        .def_readwrite("duration", &StormConfig::duration)
+        .def_readwrite("intensity", &StormConfig::intensity)
+        .def_readwrite("numInitialFailures", &StormConfig::numInitialFailures)
+        .def_readwrite("overloadCheckInterval", &StormConfig::overloadCheckInterval)
+        .def_readwrite("seed", &StormConfig::seed)
+        .def_readwrite("playerBudget", &StormConfig::playerBudget);
+
+    // ===== Storm Simulator =====
+    py::class_<StormSimulator>(m, "StormSimulator")
+        .def(py::init<const StormConfig&>())
+        .def("initialize", &StormSimulator::initialize)
+        .def("stepNext", &StormSimulator::stepNext)
+        .def("isFinished", &StormSimulator::isFinished)
+        .def("playerCutEdge", &StormSimulator::playerCutEdge)
+        .def("playerSpikeDemand", &StormSimulator::playerSpikeDemand)
+        .def("playerReinforceLine", &StormSimulator::playerReinforceLine)
+        .def("getGrid", &StormSimulator::getGrid, py::return_value_policy::reference);
+
+    // ===== Storm Frame =====
+    py::class_<StormFrame>(m, "StormFrame")
+        .def(py::init<>())
+        .def_readonly("timestamp", &StormFrame::timestamp)
+        .def_readonly("eventDescription", &StormFrame::eventDescription)
+        .def_readonly("gridHealth", &StormFrame::gridHealth)
+        .def_readonly("criticalLoadProtected", &StormFrame::criticalLoadProtected)
+        .def_readonly("linesFailed", &StormFrame::linesFailed)
+        .def_readonly("nodesFailed", &StormFrame::nodesFailed);
 
     // ===== Trigger Event =====
     py::class_<TriggerEvent>(m, "TriggerEvent")
