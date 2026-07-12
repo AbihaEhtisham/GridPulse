@@ -9,6 +9,13 @@ from app.repositories import grid_repo
 
 router = APIRouter(prefix="/api/grids", tags=["grids"])
 
+@router.post("/generate-map")
+async def create_map_grid(config: dict, db: Session = Depends(get_db)):
+    """Generate a city-style map grid."""
+    from app.services.engine_service import generate_map_grid
+    grid_data = generate_map_grid(config)
+    grid_repo.save_grid(db, config, grid_data, name="City Map")
+    return grid_data
 
 @router.post("/generate", response_model=GridResponse)
 async def create_grid(config: GridConfigRequest, db: Session = Depends(get_db)):
@@ -21,6 +28,13 @@ async def create_grid(config: GridConfigRequest, db: Session = Depends(get_db)):
     
     return grid_data
 
+@router.post("/generate-map", response_model=GridResponse)
+async def create_map_grid(config: dict, db: Session = Depends(get_db)):
+    """Generate a city-style map grid."""
+    from app.services.engine_service import generate_map_grid
+    grid_data = generate_map_grid(config)
+    grid_repo.save_grid(db, config, grid_data, name="City Map Grid")
+    return grid_data
 
 @router.get("/")
 async def list_grids(db: Session = Depends(get_db)):

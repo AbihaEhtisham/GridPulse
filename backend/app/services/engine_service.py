@@ -6,12 +6,10 @@ Handles all communication with the compiled gridpulse_engine_py module.
 import sys
 import os
 
-# Add the engine build directory to the DLL search path
-_ENGINE_BUILD_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', '..', '..', 'engine', 'build')
-)
-os.add_dll_directory(_ENGINE_BUILD_DIR)
-sys.path.insert(0, _ENGINE_BUILD_DIR)
+# The .pyd and DLLs are in the backend root folder
+_BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+os.add_dll_directory(_BACKEND_ROOT)
+sys.path.insert(0, _BACKEND_ROOT)
 
 import gridpulse_engine_py as _engine
 
@@ -105,6 +103,21 @@ def compute_flow(grid_config_dict: dict):
     result = _engine.computeFlow(grid)
     return dict(result)
 
+def generate_map_grid(config_dict: dict):
+    """Generate a city-style map grid."""
+    config = _engine.MapConfig()
+    config.mapWidth = config_dict.get("mapWidth", 1200)
+    config.mapHeight = config_dict.get("mapHeight", 800)
+    config.numPowerPlants = config_dict.get("numPowerPlants", 3)
+    config.numSubstations = config_dict.get("numSubstations", 5)
+    config.numHospitals = config_dict.get("numHospitals", 2)
+    config.numCommercial = config_dict.get("numCommercial", 8)
+    config.numResidential = config_dict.get("numResidential", 20)
+    config.redundancyFactor = config_dict.get("redundancyFactor", 5)
+    config.seed = config_dict.get("seed", 42)
+
+    grid = _engine.generateMapGrid(config)
+    return _serialize_grid(grid)
 
 def analyze_grid(grid_config_dict: dict):
     """Run vulnerability analysis on a grid."""
@@ -123,6 +136,21 @@ def analyze_grid(grid_config_dict: dict):
         "articulationPoints": dict(articulation)
     }
 
+def generate_map_grid(config_dict: dict):
+    """Generate a city-style map grid with realistic layout."""
+    config = _engine.MapConfig()
+    config.mapWidth = config_dict.get("mapWidth", 1200)
+    config.mapHeight = config_dict.get("mapHeight", 800)
+    config.numPowerPlants = config_dict.get("numPowerPlants", 3)
+    config.numSubstations = config_dict.get("numSubstations", 5)
+    config.numHospitals = config_dict.get("numHospitals", 2)
+    config.numCommercial = config_dict.get("numCommercial", 8)
+    config.numResidential = config_dict.get("numResidential", 20)
+    config.redundancyFactor = config_dict.get("redundancyFactor", 5)
+    config.seed = config_dict.get("seed", 42)
+    
+    grid = _engine.generateMapGrid(config)
+    return _serialize_grid(grid)
 
 def _serialize_grid(grid) -> dict:
     """Convert a C++ Grid object to a frontend-friendly dict."""

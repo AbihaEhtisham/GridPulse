@@ -5,6 +5,7 @@
 #include "graph/node.hpp"
 #include "graph/edge.hpp"
 #include "utils/grid_generator.hpp"
+#include "utils/map_generator.hpp"
 #include "flow/min_cost_max_flow.hpp"
 #include "flow/dijkstra.hpp"
 #include "cascade/cascade_loop.hpp"
@@ -155,10 +156,28 @@ PYBIND11_MODULE(gridpulse_engine_py, m) {
         .def_readwrite("canvasHeight", &GeneratorConfig::canvasHeight)
         .def_readwrite("seed", &GeneratorConfig::seed);
 
-    // ===== Grid Generator (using lambda to resolve overload) =====
+    // ===== Map Config =====
+    py::class_<MapConfig>(m, "MapConfig")
+        .def(py::init<>())
+        .def_readwrite("mapWidth", &MapConfig::mapWidth)
+        .def_readwrite("mapHeight", &MapConfig::mapHeight)
+        .def_readwrite("numPowerPlants", &MapConfig::numPowerPlants)
+        .def_readwrite("numSubstations", &MapConfig::numSubstations)
+        .def_readwrite("numHospitals", &MapConfig::numHospitals)
+        .def_readwrite("numCommercial", &MapConfig::numCommercial)
+        .def_readwrite("numResidential", &MapConfig::numResidential)
+        .def_readwrite("redundancyFactor", &MapConfig::redundancyFactor)
+        .def_readwrite("seed", &MapConfig::seed);
+
+    // ===== Grid Generator =====
     m.def("generateGrid", [](const GeneratorConfig& config) {
         return GridGenerator::generate(config);
     }, py::arg("config"), "Generate a synthetic power grid");
+
+    // ===== Map Grid Generator =====
+    m.def("generateMapGrid", [](const MapConfig& config) {
+        return MapGridGenerator::generate(config);
+    }, py::arg("config"), "Generate a city-style map grid with realistic layout");
 
     // ===== Trigger Event =====
     py::class_<TriggerEvent>(m, "TriggerEvent")
